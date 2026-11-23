@@ -127,4 +127,19 @@ void main() {
     expect(size(VideoFit.ratio4x3), const Size(360, 480));
     expect(size(VideoFit.ratio16x9), const Size(360, 640));
   });
+
+  test('portrait style for wide videos defaults to on', () {
+    expect(const PlaybackPreferences().portraitStyleForWide, isTrue);
+    expect(
+      PlaybackPreferences.fromJson(const {'speed': 1}).portraitStyleForWide,
+      isTrue,
+    );
+    expect(
+      PlaybackPreferences.fromJson(const {
+        'speed': 1,
+        'portraitStyleForWide': false,
+      }).portraitStyleForWide,
+      isFalse,
+    );
+  });
 }
