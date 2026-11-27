@@ -5,6 +5,7 @@ import 'dart:io';
 import 'dart:isolate';
 
 import 'package:ffi/ffi.dart';
+import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 
@@ -117,6 +118,10 @@ class AppFailure implements Exception {
 }
 
 abstract class AppRepository {
+  Future<void> recordVideoDiagnostic(String message) async {
+    DiaryService.add('[Video] $message');
+  }
+
   Future<ResourceSettings> resourceSettings() async => const ResourceSettings();
   Future<ResourceSettings> saveResourceSettings(
     ResourceSettings settings,
@@ -180,6 +185,7 @@ abstract class AppRepository {
       throw AppFailure('当前环境不支持安装模块');
   Future<void> uninstallModule(String id) async =>
       throw AppFailure('当前环境不支持卸载模块');
+  Future<bool> updateBundledModules() async => false;
   Map<String, int> missingSourceDownloads() => const {};
   Future<List<String>> suggestions(String source, String query) async =>
       const [];
@@ -699,6 +705,7 @@ class NativeRepository extends AppRepository {
             'cancelPlayback',
             'cancelRead',
             'updateSystemProxy',
+            'recordVideoDiagnostic',
           }.contains(action) ||
           action == 'workLease' && input['command'] == 'end' ||
           action == 'finishConversion' ||
@@ -903,6 +910,16 @@ class NativeRepository extends AppRepository {
   }
 
   @override
+  Future<bool> updateBundledModules() async {
+    final result = await _call({'action': 'updateBundledModules'});
+    if (result['updated'] == true) {
+      _installSources(result['sources']);
+      return true;
+    }
+    return false;
+  }
+
+  @override
   Map<String, int> missingSourceDownloads() {
     final counts = <String, int>{};
     for (final job in _downloadCache.$2) {
@@ -912,6 +929,17 @@ class NativeRepository extends AppRepository {
       }
     }
     return counts;
+  }
+
+  @override
+  Future<void> recordVideoDiagnostic(String message) async {
+    debugPrint('[Diary] [Video] $message');
+    try {
+      await _call({'action': 'recordVideoDiagnostic', 'message': message});
+    } catch (_) {
+      DiaryService.add('[Video] $message');
+      DiaryService.add('[Video] 写入诊断文件失败');
+    }
   }
 
   @override

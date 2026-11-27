@@ -97,10 +97,10 @@ class AppShell extends StatefulWidget {
   final LocalStore store;
 
   @override
-  State<AppShell> createState() => _AppShellState();
+  State<AppShell> createState() => AppShellState();
 }
 
-class _AppShellState extends State<AppShell> {
+class AppShellState extends State<AppShell> {
   final _navigators = [
     for (final _ in AppTab.values) GlobalKey<NavigatorState>(),
   ];
@@ -126,14 +126,25 @@ class _AppShellState extends State<AppShell> {
 
   NavigatorState? get _navigator => _navigators[_tab.index].currentState;
 
+  bool get canPopCurrentTab => _navigator?.canPop() ?? false;
+
+  Future<bool> popCurrentTab() async {
+    final navigator = _navigator;
+    if (navigator == null || !navigator.canPop()) return false;
+    return navigator.maybePop();
+  }
+
   @override
   void initState() {
     super.initState();
     FocusManager.instance.addListener(_followFocus);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted) return;
-      unawaited(offerRestoredModules(context, widget.store));
-      runStartupChecks(context, widget.store);
+      startBackgroundStartupTasks(context, widget.store);
+      try {
+        await offerRestoredModules(context, widget.store);
+      } catch (_) {}
+      if (mounted) await runStartupChecks(context, widget.store);
     });
   }
 

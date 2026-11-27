@@ -19,6 +19,11 @@ import 'playback_preferences.dart';
 import 'playback_preloader.dart';
 import 'playback_recovery.dart';
 
+final _mpvHardwareLog = RegExp(
+  r'hwdec|videotoolbox|hardware decod|software decoding|CVOpenGLESTexture',
+  caseSensitive: false,
+);
+
 const _swapChromaSource = '''
 //!HOOK NATIVE
 //!BIND HOOKED
@@ -107,6 +112,13 @@ class PlaybackSession extends ChangeNotifier {
     store.addListener(_accessChanged);
     store.addListener(_syncDanmakuOptions);
     store.addListener(_syncMedia);
+    if (Platform.isIOS && !kReleaseMode) {
+      for (final target in [_player, ?_standby]) {
+        _mpvLogSubscriptions.add(
+          target.stream.log.listen((log) => _logMpvHardware(target, log)),
+        );
+      }
+    }
     _bind();
     _saveTimer = Timer.periodic(
       const Duration(seconds: 5),
@@ -190,12 +202,27 @@ class PlaybackSession extends ChangeNotifier {
     _speedResumeDeadline = DateTime.now().add(const Duration(seconds: 15));
   }
 
-  String _videoOutput = '';
+  final _mpvLogSubscriptions = <StreamSubscription<PlayerLog>>[];
   String _videoOutputSession = '';
+
+  void _logMpvHardware(Player target, PlayerLog log) {
+    final message = log.text.trim();
+    if (_closed ||
+        (!_mpvHardwareLog.hasMatch(log.prefix) &&
+            !_mpvHardwareLog.hasMatch(message))) {
+      return;
+    }
+    final role = identical(target, _player) ? 'active' : 'standby';
+    unawaited(
+      repository.recordVideoDiagnostic(
+        'mpv player=$role [${log.prefix}/${log.level}] $message',
+      ),
+    );
+  }
 
   Future<void> _logVideoOutput(VideoParams parameters) async {
     final platform = player.platform;
-    if (parameters.pixelformat == null || platform is! NativePlayer) return;
+    if (platform is! NativePlayer) return;
     if (!player.state.playing ||
         player.state.buffering ||
         player.state.position < const Duration(seconds: 2)) {
@@ -203,24 +230,33 @@ class PlaybackSession extends ChangeNotifier {
     }
     final session = _plan?.session ?? '';
     if (session.isEmpty || session == _videoOutputSession) return;
-    try {
-      final values = [
-        for (final name in [
-          'hwdec-current',
-          'current-vo',
-          'video-codec',
-          'container-fps',
-        ])
-          await platform.getProperty(name),
-      ];
-      if (_closed) return;
-      _videoOutputSession = session;
-      final line =
-          '[Video] decoder=${store.playbackPreferences.televisionDecoder.name} hwdec=${values[0]} vo=${values[1]} codec=${values[2]} fps=${values[3]} format=${parameters.pixelformat} hw_format=${parameters.hwPixelformat} size=${parameters.w}x${parameters.h}';
-      if (line == _videoOutput) return;
-      _videoOutput = line;
-      DiaryService.add(line);
-    } catch (_) {}
+    _videoOutputSession = session;
+    final decoder = store.playbackPreferences.televisionDecoder.name;
+    final values = <String, String>{};
+    for (final name in [
+      'hwdec',
+      'hwdec-current',
+      'current-vo',
+      'video-codec',
+      'container-fps',
+    ]) {
+      try {
+        final value = await platform.getProperty(name);
+        values[name] = value.isEmpty ? 'unavailable' : value;
+      } catch (error) {
+        values[name] = '读取失败(${error.runtimeType})';
+      }
+      if (_closed || _plan?.session != session || player.platform != platform) {
+        return;
+      }
+    }
+    await repository.recordVideoDiagnostic(
+      'decoder=$decoder session=$session hwdec=${values['hwdec-current']} '
+      'hwdec_option=${values['hwdec']} '
+      'vo=${values['current-vo']} codec=${values['video-codec']} '
+      'fps=${values['container-fps']} format=${parameters.pixelformat} '
+      'hw_format=${parameters.hwPixelformat} size=${parameters.w}x${parameters.h}',
+    );
   }
 
   final AppRepository repository;
@@ -417,12 +453,17 @@ class PlaybackSession extends ChangeNotifier {
   void _syncMedia() {
     if (_closed) return;
     final controls = MediaControls.instance;
-    if (!_backgroundPlayback || !_engaged || !_usable || store.locked) {
+    if (!_engaged || !_usable || store.locked) {
       controls.release(this);
       return;
     }
     if (!_playIntent && !controls.owns(this)) return;
     final state = player.state;
+    final playing = _playIntent && state.playing;
+    if (!_backgroundPlayback) {
+      controls.track(this, playing, _mediaCommand);
+      return;
+    }
     final opened = ready && _openedIndex == _index;
     controls.update(
       this,
@@ -431,7 +472,7 @@ class PlaybackSession extends ChangeNotifier {
         subtitle: episode.title,
         artwork: repository.knownCover(detail.drama) ?? '',
         active: _playIntent && _error == null,
-        playing: _playIntent && state.playing,
+        playing: playing,
         position: opened ? state.position : Duration.zero,
         duration: opened ? state.duration : Duration.zero,
         rate: state.rate,
@@ -781,17 +822,40 @@ class PlaybackSession extends ChangeNotifier {
     final hwdec = switch (decoder) {
       TelevisionDecoder.software => 'no',
       TelevisionDecoder.hardwareDirect when Platform.isAndroid => 'mediacodec',
-      TelevisionDecoder.hardware ||
-      TelevisionDecoder.hardwareSwapUv when Platform.isAndroid =>
+      TelevisionDecoder.hardware || TelevisionDecoder.hardwareSwapUv
+          when Platform.isAndroid =>
         'mediacodec-copy',
       TelevisionDecoder.hardware when Platform.isIOS || Platform.isMacOS =>
         'videotoolbox-copy',
+      TelevisionDecoder.optimized || TelevisionDecoder.hardwareDirect
+          when Platform.isIOS =>
+        'videotoolbox,videotoolbox-copy',
+      _ when Platform.isIOS => 'videotoolbox-copy',
       _ when Platform.isWindows => 'd3d11va',
       _ when Platform.isAndroid => 'auto-safe',
       _ when Platform.isMacOS => 'auto-safe',
       _ => null,
     };
-    if (hwdec != null) await platform.setProperty('hwdec', hwdec);
+    if (hwdec != null) {
+      await platform.setProperty('hwdec', hwdec);
+      if (Platform.isIOS) {
+        String configured;
+        try {
+          configured = await platform.getProperty('hwdec');
+          if (configured.isEmpty) configured = 'unavailable';
+        } catch (error) {
+          configured = '读取失败(${error.runtimeType})';
+        }
+        final role = identical(target, _player) ? 'active' : 'standby';
+        unawaited(
+          repository.recordVideoDiagnostic(
+            'configure player=$role session=${plan.session} '
+            'decoder=${decoder.name} hwdec_requested=$hwdec '
+            'hwdec_option=$configured',
+          ),
+        );
+      }
+    }
     if (Platform.isAndroid) {
       await platform.setProperty('hwdec-codecs', 'all');
       await platform.setProperty('vd-lavc-skiploopfilter', 'nonkey');
@@ -1541,9 +1605,7 @@ class PlaybackSession extends ChangeNotifier {
     _setVisible(visible);
     final foreground = visible || _backgroundPlayback;
     if (_foreground == foreground) return;
-    DiaryService.add(
-      foreground ? '[Play] 应用回到前台' : '[Play] 应用不可见，暂停播放',
-    );
+    DiaryService.add(foreground ? '[Play] 应用回到前台' : '[Play] 应用不可见，暂停播放');
     _foreground = foreground;
     _health.reset();
     _sync();
@@ -1640,6 +1702,9 @@ class PlaybackSession extends ChangeNotifier {
     _resumeTimer?.cancel();
     if (_volumeTimer != null) _saveVolume();
     for (final subscription in _subscriptions) {
+      unawaited(subscription.cancel());
+    }
+    for (final subscription in _mpvLogSubscriptions) {
       unawaited(subscription.cancel());
     }
     danmaku.dispose();
