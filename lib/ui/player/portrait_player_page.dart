@@ -25,6 +25,7 @@ import 'playback_handle.dart';
 import 'player_home_button.dart';
 import 'player_lock.dart';
 import 'player_surface.dart';
+import 'player_input.dart';
 import 'player_video.dart';
 import 'swipe_controls.dart';
 
@@ -53,6 +54,11 @@ class PortraitPlayerPage extends StatefulWidget {
 class _PortraitPlayerPageState extends State<PortraitPlayerPage>
     with WidgetsBindingObserver {
   late final _pages = PageController(initialPage: _session.index);
+  late final _inputs = PlayerInputController(
+    session: () => _session,
+    onFullscreen: widget.onFullscreen,
+    onHint: _say,
+  );
   final List<StreamSubscription<dynamic>> _subscriptions = [];
   Player? _bound;
   Timer? _hintTimer;
@@ -268,6 +274,7 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
 
   void _wheel(PointerSignalEvent event) {
     if (_session.locked) return;
+    if (_inputs.wheel(event, context)) return;
     if (event is! PointerScrollEvent || event.scrollDelta.dy == 0) return;
     GestureBinding.instance.pointerSignalResolver.register(event, (_) {
       if (_scrolling) return;
@@ -520,7 +527,10 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
                 PlayerLockOverlay(
                   locked: _session.locked,
                   alignments: const [Alignment.topRight],
-                  padding: EdgeInsets.only(top: _bars.top + 6, right: 12),
+                  padding: EdgeInsets.only(
+                    top: _bars.top + 6,
+                    right: _bars.right + 12,
+                  ),
                   onUnlock: _unlock,
                   onBlocked: () => _say('已锁定，点击锁图标解锁'),
                 ),
@@ -631,9 +641,13 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
     final session = _session;
     final live = MediaQuery.paddingOf(context);
     final padding = _bars = EdgeInsets.only(
+      left: live.left,
       top: math.max(_bars.top, live.top),
+      right: live.right,
       bottom: math.max(_bars.bottom, live.bottom),
     );
+    final left = padding.left;
+    final right = padding.right;
     final bottom = padding.bottom;
     final locked = session.boostLocked;
     _syncSystemBars();
@@ -713,15 +727,15 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
           ),
         Positioned(
           key: const ValueKey('header'),
-          left: 4,
-          right: 12,
+          left: left + 4,
+          right: right + 12,
           top: padding.top,
           height: 56,
           child: _chrome(_header()),
         ),
         Positioned(
-          left: 0,
-          right: 0,
+          left: left,
+          right: right,
           bottom: bottom + 140,
           child: FadePresence(
             scaleFrom: .9,
@@ -734,16 +748,16 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
         ),
         Positioned(
           key: const ValueKey('progress'),
-          left: 16,
-          right: 16,
+          left: left + 16,
+          right: right + 16,
           bottom: bottom + 60,
           height: 32,
           child: _chrome(_progress(context)),
         ),
         Positioned(
           key: const ValueKey('episodes'),
-          left: 16,
-          right: widget.onFullscreen == null ? 16 : 68,
+          left: left + 16,
+          right: right + (widget.onFullscreen == null ? 16 : 68),
           bottom: bottom + 16,
           height: 44,
           child: _chrome(_episodeStrip()),
@@ -751,7 +765,7 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
         if (widget.onFullscreen case final onFullscreen?)
           Positioned(
             key: const ValueKey('fullscreen'),
-            right: 16,
+            right: right + 16,
             bottom: bottom + 16,
             width: 44,
             height: 44,
@@ -774,8 +788,8 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
             ),
           ),
         Positioned(
-          left: 0,
-          right: 0,
+          left: left,
+          right: right,
           top: padding.top + 76,
           child: FadePresence(
             child: _holding
@@ -851,8 +865,8 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
         if (session.saveWarning case final warning?)
           Positioned(
             top: padding.top + 64,
-            left: 12,
-            right: 12,
+            left: left + 12,
+            right: right + 12,
             child: Material(
               color: const Color(0xE6322424),
               borderRadius: BorderRadius.circular(10),

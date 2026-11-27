@@ -65,19 +65,26 @@ def build() -> Path:
 
     edit(source, 'Makefile', 'BINARIES="meson ninja cmake nasm"',
          'BINARIES="meson ninja cmake"')
-    edit(source, 'cross-files/ios-arm64.ini', "pkgconfig = ['pkg-config']",
-         "pkgconfig = ['pkg-config']\ncmake = ['cmake']")
     sdk_path = subprocess.check_output(
         ['xcrun', '--sdk', 'iphoneos', '--show-sdk-path'], text=True).strip()
     cross_file = source / 'cross-files/ios-arm64.ini'
     cross_file.write_text(cross_file.read_text().replace(
         '/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk',
         sdk_path))
+    cmake_cross = source / 'cross-files/ios-arm64-cmake.ini'
+    cmake_cross.write_text("[binaries]\ncmake = ['cmake']\n")
+    for script in ('scripts/mbedtls/build.sh', 'scripts/uchardet/build.sh'):
+        edit(source, script,
+             '--cross-file ${PROJECT_DIR}/cross-files/${OS}-${ARCH}.ini \\',
+             '--cross-file ${PROJECT_DIR}/cross-files/${OS}-${ARCH}.ini \\\n'
+             '    --cross-file ${PROJECT_DIR}/cross-files/ios-arm64-cmake.ini \\')
     edit(source, 'scripts/mpv/build.sh', 'patches/mpv-fix-missing-objc.patch',
          'patches/mpv-fix-missing-objc.patch\n' +
          shlex.join([sys.executable, str(HERE / 'apply.py')]) + ' "$SRC_DIR"')
     edit(source, 'scripts/libxml2/meson.build', 'configure_options : [',
          "configure_options : [\n        '--without-lzma',")
+    edit(source, 'scripts/ffmpeg/meson.build', "find_program('pkgconfig')",
+         "find_program('pkg-config')")
     edit(source, 'scripts/mbedtls/build.sh',
          "find . -type f -name '*.dylib' -exec sh -c 'mv {} dist/lib' \\;",
          "find build_cross/subprojects/mbedtls -maxdepth 1 -name '*.dylib' -exec cp -P {} dist/lib \\;\n"
